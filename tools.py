@@ -4,7 +4,42 @@
 from langchain_core.tools import tool
 import json, os, datetime
 
-DATA_FILE = "murilo_data.json"
+DATA_FILE = "/tmp/murilo_data.json"
+
+# =============================================================================
+# BLOCOS DO DIA
+# =============================================================================
+# Define os períodos do dia e as tarefas fixas de cada um.
+# Importado pelo main.py para montar os teclados inline e os horários.
+
+BLOCOS = {
+    "manha": {
+        "titulo": "☀️ Manhã (9h–12h)",
+        "tasks": {
+            "exercicio": {"name": "🏃 Exercício físico",          "points": 40},
+            "curso":     {"name": "📖 Curso durante o expediente", "points": 30},
+        }
+    },
+    "almoco": {
+        "titulo": "🥗 Almoço (12h–13h)",
+        "tasks": {
+            "almoco":  {"name": "🥗 Almoço de verdade", "points": 20},
+            "ingles1": {"name": "🇬🇧 Inglês 20 min",    "points": 25},
+            "lanche":  {"name": "🍎 Lanche saudável",   "points": 15},
+        }
+    },
+    "entretempo": {
+        "titulo": "⏳ Entre trabalho e faculdade (18h–19h)",
+        "tasks": {
+            "ingles2":  {"name": "🎧 Inglês sem legenda", "points": 20},
+            "descanso": {"name": "😴 Descanso real",      "points": 20},
+        }
+    },
+    "faculdade": {
+        "titulo": "📚 Faculdade / Cursos (19h+)",
+        "tasks": {}  # Preenchido dinamicamente com /add
+    },
+}
 
 def carregar():
     if os.path.exists(DATA_FILE):
