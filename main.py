@@ -22,7 +22,7 @@
 # =============================================================================
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-# Update          → representa uma atualização recebida do Telegram (mensagem, clique, etc.)
+# Update               → representa uma atualização recebida do Telegram
 # InlineKeyboardButton → um botão dentro de uma mensagem
 # InlineKeyboardMarkup → o conjunto de botões (teclado inline)
 
@@ -126,7 +126,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Ex: "fiz o exercício" → agente chama marcar_tarefa("exercicio")
     """
     texto   = update.message.text          # Texto que o usuário digitou
-    chat_id = update.effective_chat.id     # ID único do chat (necessário para enviar mensagens)
+    chat_id = update.effective_chat.id     # ID único do chat
 
     # Salva o chat_id no arquivo de dados para o agendador poder usar
     dados = carregar()
@@ -135,7 +135,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         salvar(dados)
 
     # Mostra animação de "digitando..." enquanto o agente pensa
-    # Isso dá feedback visual ao usuário que algo está acontecendo
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     # Passa o texto para o agente LangChain processar e retorna a resposta
@@ -156,13 +155,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     O que faz:
     1. Recebe o callback_data do botão clicado (ex: 'done:exercicio')
     2. Identifica qual tarefa foi clicada
-    3. Faz o toggle: se estava feita → desmarca, se estava pendente → marca
+    3. Toggle: se estava feita → desmarca, se estava pendente → marca
     4. Salva os dados atualizados
     5. Atualiza os botões da mensagem original para refletir o novo estado
-    6. Envia uma confirmação breve (+X pts! ou Desmarcado)
-
-    Por que editar a mensagem em vez de enviar uma nova?
-    Porque atualizar o botão na mesma mensagem é mais limpo e não polui o chat.
+    6. Envia confirmação breve (+X pts! ou Desmarcado)
     """
     query   = update.callback_query        # Objeto com os dados do clique
     chat_id = query.message.chat_id        # ID do chat onde o clique ocorreu
@@ -184,8 +180,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             t["done"] = not t["done"]
             salvar(dados)
 
-            # Descobre quais chaves estavam no teclado desta mensagem específica
-            # (cada mensagem de bloco tem chaves diferentes)
+            # Descobre quais chaves estavam no teclado desta mensagem
             chaves_atuais = [
                 btn.callback_data.split(":", 1)[1]
                 for row in query.message.reply_markup.inline_keyboard
@@ -195,8 +190,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Reconstrói o teclado com o novo estado (✅ ou ⬜ atualizado)
             novo_teclado = construir_teclado(chaves_atuais, tarefas)
-
-            # Edita a mensagem original para mostrar os botões atualizados
             await query.edit_message_reply_markup(reply_markup=novo_teclado)
 
             # Envia confirmação breve
@@ -237,7 +230,7 @@ MSGS = {
     "almoco":     "⏰ *12h — Almoço!*\n\nDuas missões agora:\n🥗 Almoço de verdade\n🇬🇧 Inglês por 20 min",
     "entretempo": "⏰ *18h — Intervalo!*\n\nAntes da faculdade:\n🎧 Inglês sem legenda\n😴 Descansa de verdade",
     "faculdade":  "🎓 *19h — Faculdade!*\n\nSuas tarefas de hoje 👇",
-    "resumo":     "🌙 *Resumo do dia!*\n\nComo foi? Digite /status para ver os pontos finais.",
+    "resumo":     "🌙 *Resumo do dia!*\n\nComo foi? Digite qualquer coisa para ver os pontos.",
 }
 
 async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
@@ -253,9 +246,9 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
     5. Para outros blocos: envia a mensagem com botões das tarefas do bloco
     6. Marca o envio como feito para não repetir
 
-    Por que a cada 60 segundos e não exatamente no horário?
-    O JobQueue não garante execução exata no segundo certo,
-    então verificamos frequentemente e usamos a chave única para evitar duplicatas.
+    Por que a cada 60 segundos?
+    O JobQueue não garante execução no segundo exato, então verificamos
+    frequentemente e usamos a chave única para evitar mensagens duplicadas.
     """
     agora   = agora_br()
     hoje    = agora.date().isoformat()
@@ -263,39 +256,35 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
     dados   = carregar()
     chat_id = dados.get("chat_id")
 
-    # Só executa se o usuário já tiver ativado o bot (mandado pelo menos 1 mensagem)
+    # Só executa se o usuário já tiver ativado o bot
     if not chat_id:
         return
 
     enviados = dados.get("enviados", [])
 
     for hora_agend, min_agend, slug in HORARIOS:
-        # Chave única para este envio específico — garante que não repita no mesmo dia
+        # Chave única para este envio — garante que não repita no mesmo dia
         chave = f"{hoje}-{hora_agend}:{min_agend:02d}-{slug}"
 
-        # Condições para enviar:
-        # 1. É a hora certa (hora e minuto batem)
-        # 2. Esta mensagem ainda não foi enviada hoje
         if h == hora_agend and m == min_agend and chave not in enviados:
 
             if slug == "briefing":
-                # ── Briefing das 7h30: mensagem introdutória + blocos com botões ──
+                # ── Briefing das 7h30 ────────────────────────────────────────
                 tarefas = dados.get("tarefas", {})
                 pts_max = sum(t["points"] for t in tarefas.values())
 
-                # Mensagem principal do briefing
                 await context.bot.send_message(
                     chat_id,
                     f"🌅 *Bom dia, Murilo!* Meta de hoje: *{pts_max} pts*\n\n"
-                    "Escreve o que fez e eu registro. Ou usa os botões abaixo 👇\n"
-                    "Exemplos: 'fiz o exercício', 'já almocei', 'usei 20 min de instagram'",
+                    "Escreve o que fez e eu registro automaticamente.\n"
+                    "Ex: 'fiz o exercício', 'já almocei', 'usei 20 min de instagram'",
                     parse_mode="Markdown"
                 )
 
                 # Envia um bloco por mensagem, cada um com seus botões
                 for bloco, info in BLOCOS.items():
                     chaves = [k for k, t in tarefas.items() if t.get("bloco") == bloco]
-                    if chaves:  # Só envia se o bloco tiver tarefas
+                    if chaves:
                         teclado = construir_teclado(chaves, tarefas)
                         await context.bot.send_message(
                             chat_id,
@@ -305,18 +294,15 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
                         )
 
             elif slug == "resumo":
-                # ── Resumo das 23h: pontuação final do dia ──
+                # ── Resumo das 23h ────────────────────────────────────────────
                 tarefas = dados.get("tarefas", {})
                 pts     = sum(t["points"] for t in tarefas.values() if t.get("done"))
                 pts_max = sum(t["points"] for t in tarefas.values())
                 pct     = int(pts / pts_max * 100) if pts_max else 0
 
-                if pct >= 80:
-                    emoji_final = "🏆 Arrasou!"
-                elif pct >= 50:
-                    emoji_final = "💪 Bom esforço!"
-                else:
-                    emoji_final = "📈 Amanhã é uma nova chance."
+                if pct >= 80:   emoji_final = "🏆 Arrasou!"
+                elif pct >= 50: emoji_final = "💪 Bom esforço!"
+                else:           emoji_final = "📈 Amanhã é uma nova chance."
 
                 await context.bot.send_message(
                     chat_id,
@@ -327,14 +313,12 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
                 )
 
             else:
-                # ── Outros blocos (almoço, entretempo, faculdade) ──
+                # ── Outros blocos (almoço, entretempo, faculdade) ─────────────
                 tarefas = dados.get("tarefas", {})
-                # Filtra apenas as tarefas do bloco atual
                 chaves  = [k for k, t in tarefas.items() if t.get("bloco") == slug]
                 msg     = MSGS.get(slug, "")
 
                 if chaves:
-                    # Envia mensagem com botões das tarefas do bloco
                     teclado = construir_teclado(chaves, tarefas)
                     await context.bot.send_message(
                         chat_id, msg,
@@ -342,14 +326,14 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=teclado
                     )
                 else:
-                    # Bloco sem tarefas (ex: faculdade sem /add ainda)
+                    # Bloco sem tarefas (ex: faculdade sem nenhuma adicionada)
                     await context.bot.send_message(
                         chat_id,
-                        msg + "\n\n_(Nenhuma tarefa adicionada. Diga 'adiciona tarefa X')_",
+                        msg + "\n\n_(Sem tarefas. Diga 'adiciona tarefa X' para adicionar.)_",
                         parse_mode="Markdown"
                     )
 
-            # Marca este envio como feito para não repetir hoje
+            # Marca como enviado para não repetir hoje
             enviados.append(chave)
             dados["enviados"] = enviados
             salvar(dados)
@@ -366,42 +350,32 @@ def main():
     O que faz:
     1. Lê o token do bot do arquivo .env
     2. Cria a aplicação com python-telegram-bot
-    3. Registra os handlers (quem processa o quê)
-    4. Configura o agendador para rodar a cada 60 segundos
+    3. Registra os handlers (quem processa o quê):
+       - MessageHandler     → mensagens de texto → handle_message()
+       - CallbackQueryHandler → cliques em botões → handle_callback()
+    4. Configura o JobQueue para rodar enviar_notificacao() a cada 60 segundos
     5. Inicia o polling — fica perguntando ao Telegram se há mensagens novas
-
-    Handlers registrados:
-    - MessageHandler → processa mensagens de texto → handle_message()
-    - CallbackQueryHandler → processa cliques em botões → handle_callback()
-
-    JobQueue:
-    - run_repeating() → roda enviar_notificacao() a cada 60 segundos
-    - first=10 → começa 10 segundos após o bot iniciar
     """
-    token = os.getenv("BOT_TOKEN")  # Lê o token do .env
+    token = os.getenv("BOT_TOKEN")
 
-    # Constrói a aplicação do bot com o token
     app = ApplicationBuilder().token(token).build()
 
-    # Handler para mensagens de texto (qualquer texto que não seja comando /)
+    # Registra handler de mensagens de texto
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Handler para cliques em botões inline (✅/⬜)
+    # Registra handler de cliques em botões inline
     app.add_handler(CallbackQueryHandler(handle_callback))
 
-    # Agendador: chama enviar_notificacao() a cada 60 segundos
-    # interval=60 → intervalo em segundos entre cada execução
+    # Agendador: roda enviar_notificacao() a cada 60 segundos
+    # interval=60 → intervalo entre execuções (segundos)
     # first=10    → aguarda 10 segundos antes da primeira execução
     app.job_queue.run_repeating(enviar_notificacao, interval=60, first=10)
 
     print("🤖 Murilo Agent rodando! (Ctrl+C para parar)")
 
-    # Inicia o polling: fica em loop perguntando ao Telegram se há updates novos
-    # drop_pending_updates=True → ignora mensagens enviadas enquanto o bot estava offline
+    # drop_pending_updates=True → ignora mensagens recebidas enquanto o bot estava offline
     app.run_polling(drop_pending_updates=True)
 
 
-# Garante que main() só rode quando este arquivo for executado diretamente
-# (não quando for importado por outro arquivo)
 if __name__ == "__main__":
     main()
