@@ -1,71 +1,48 @@
 # =============================================================================
 # MURILO AGENT — main.py
 # =============================================================================
-# RESPONSABILIDADE DESTE ARQUIVO:
-#   É o ponto de entrada do bot. Ele faz 3 coisas em paralelo:
-#   1. Escuta mensagens de texto do Telegram e passa para o agente LangChain
-#   2. Escuta cliques nos botões inline (✅/⬜) e atualiza as tarefas
-#   3. Roda um agendador que envia mensagens automáticas nos horários certos
-#
-# FLUXO GERAL:
-#   Usuário escreve no Telegram
-#     → handle_message() recebe o texto
-#       → processar_mensagem() (agente.py) decide o que fazer
-#         → agente chama tools.py se precisar
-#           → resposta volta pro usuário
-#
-# ARQUIVOS DO PROJETO:
-#   main.py    → este arquivo (entrada do bot + agendador)
-#   agente.py  → cérebro com LangChain + Groq (entende linguagem natural)
-#   tools.py   → ações que o agente pode executar (add, marcar, status, etc.)
-#   .env       → chaves de API (nunca sobe pro GitHub)
+# Ponto de entrada do bot. Faz 3 coisas em paralelo:
+#   1. Escuta mensagens de texto → agente LangChain
+#   2. Escuta cliques nos botões inline (✅/⬜) → atualiza tarefas
+#   3. Agendador → mensagens automáticas nos horários certos
 # =============================================================================
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-# Update               → representa uma atualização recebida do Telegram
-# InlineKeyboardButton → um botão dentro de uma mensagem
-# InlineKeyboardMarkup → o conjunto de botões (teclado inline)
-
 from telegram.ext import (
-    ApplicationBuilder,     # Constrói a aplicação do bot
-    MessageHandler,         # Lida com mensagens de texto
-    CallbackQueryHandler,   # Lida com cliques em botões inline
-    filters,                # Filtra quais mensagens cada handler processa
-    ContextTypes            # Tipagem para o contexto da aplicação
+    ApplicationBuilder,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    ContextTypes,
 )
 
 from agente import processar_mensagem
-# Importa a função principal do agente LangChain
-# Ela recebe texto em linguagem natural e decide o que fazer
-
-from tools import carregar, salvar, BLOCOS
-# carregar() → lê os dados do arquivo murilo_data.json
-# salvar()   → salva os dados no arquivo murilo_data.json
-# BLOCOS     → dicionário com os blocos do dia (manhã, almoço, etc.)
-
+from tools import (
+    carregar, salvar, BLOCOS, AULAS,
+    inicializar_dia, get_aula_hoje, get_info_exercicio, sortear_tema,
+    agora_br, hoje_br, dia_semana,
+)
 from dotenv import load_dotenv
-# Carrega as variáveis do arquivo .env (BOT_TOKEN, GROQ_API_KEY)
-
 import os, datetime
 
-load_dotenv()  # Lê o .env e disponibiliza as variáveis com os.getenv()
-
+load_dotenv()
 
 # =============================================================================
-# FUSO HORÁRIO — BRASÍLIA (UTC-3)
+# HORÁRIOS DO AGENDADOR (Brasília UTC-3)
 # =============================================================================
-# O servidor Railway roda em UTC. Para pegar o horário correto de Brasília,
-# subtraímos 3 horas do UTC em todas as comparações de tempo.
+# (hora, minuto, slug)
 
-FUSO = datetime.timedelta(hours=-3)
-
-def agora_br():
-    """Retorna o datetime atual no horário de Brasília (UTC-3)."""
-    return datetime.datetime.utcnow() + FUSO
-
-def hoje_br():
-    """Retorna a data de hoje no formato 'YYYY-MM-DD' (horário de Brasília)."""
-    return agora_br().date().isoformat()
+HORARIOS = [
+    (7,  0,  "rotina"),       # Rotina matinal — meditação, banho, dentes, creme
+    (7,  30, "briefing"),     # Briefing completo com todos os blocos
+    (12, 0,  "almoco"),       # Lembrete do almoço
+    (12, 45, "pos_almoco"),   # Pós-almoço — dentes + inglês com tema
+    (17, 55, "entretempo"),   # Intervalo das 18h — inglês + aula do dia
+    (19, 0,  "faculdade"),    # Entrada na faculdade (ou exercício às quartas)
+    (21, 30, "checkin"),      # Check-in noturno — reflexão do dia
+    (22, 30, "rezar"),        # Lembrete para rezar antes de dormir
+    (23, 0,  "resumo"),       # Pontuação final do dia
+]
 
 
 # =============================================================================
@@ -73,37 +50,123 @@ def hoje_br():
 # =============================================================================
 
 def construir_teclado(chaves, tarefas):
-    """
-    Cria um teclado inline com botões para cada tarefa passada em 'chaves'.
-
-    Como funciona:
-    - Para cada chave de tarefa, cria um botão com ✅ (feita) ou ⬜ (pendente)
-    - O botão tem callback_data='done:chave' — isso é o que o bot recebe
-      quando o usuário clica no botão
-    - Um botão extra no final mostra a pontuação atual
-
-    Parâmetros:
-    - chaves:  lista de chaves das tarefas a exibir (ex: ['exercicio', 'curso'])
-    - tarefas: dicionário completo de tarefas do dia (lido do JSON)
-
-    Retorna:
-    - InlineKeyboardMarkup: objeto que o Telegram entende como teclado de botões
-    """
     botoes = []
     for k in chaves:
         t = tarefas.get(k)
-        if not t:
-            continue  # Pula se a chave não existir nas tarefas
+        if not t or t.get("cancelado"):
+            continue
         marca = "✅" if t.get("done") else "⬜"
         botoes.append([InlineKeyboardButton(
             f"{marca} {t['name']} (+{t['points']} pts)",
-            callback_data=f"done:{k}"  # Identificador enviado ao clicar
+            callback_data=f"done:{k}"
         )])
-
-    # Botão extra para ver pontuação atual
     botoes.append([InlineKeyboardButton("📊 Ver pontuação", callback_data="status")])
-
     return InlineKeyboardMarkup(botoes)
+
+
+# =============================================================================
+# HELPERS DE MENSAGENS
+# =============================================================================
+
+def msg_rotina():
+    dia_nomes = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+    dia = dia_nomes[dia_semana()]
+    return (
+        f"🌅 *Bom dia! {dia}* — Começa com o pé direito:\n\n"
+        "☑️ Meditar (5–10 min)\n"
+        "☑️ Tomar banho\n"
+        "☑️ Escovar os dentes\n"
+        "☑️ Passar creme\n\n"
+        "_Tá na sequência. Bora!_ 💪"
+    )
+
+
+def msg_almoco():
+    return (
+        "⏰ *12h — Almoço!*\n\n"
+        "🥗 Almoço de verdade\n"
+        "🦷 Dentes após almoço\n"
+        "🍎 Lanche saudável se der"
+    )
+
+
+def msg_pos_almoco(dados):
+    tema = sortear_tema(dados)
+    return (
+        f"🇬🇧 *12h45 — Inglês agora!*\n\n"
+        f"Tema sorteado: *\"{tema}\"*\n"
+        f"Fala sobre isso com a IA por 20 min 🎯\n\n"
+        f"_(dificuldade atual: {dados.get('config_ingles', {}).get('dificuldade', 'medio')})_"
+    )
+
+
+def msg_entretempo(dados):
+    aula = get_aula_hoje()
+    tema = sortear_tema(dados)
+    d    = dia_semana()
+
+    if d == 2:  # quarta — sem aula, exercício
+        return (
+            "⏰ *18h — Intervalo!*\n\n"
+            "🎧 Inglês — podcast no caminho\n"
+            f"Tema: *\"{tema}\"*\n\n"
+            "🏃 *Hoje é dia de exercício à noite!*\n"
+            "_Sem faculdade — aproveita!_"
+        )
+
+    if aula:
+        return (
+            f"⏰ *18h — Intervalo!*\n\n"
+            "🎧 Inglês — podcast no caminho\n"
+            f"Tema: *\"{tema}\"*\n\n"
+            f"📚 Hoje: {aula['nome']} — {aula['sala']}"
+        )
+
+    return (
+        "⏰ *18h — Intervalo!*\n\n"
+        "🎧 Inglês — podcast ou música sem legenda PT\n"
+        f"Tema: *\"{tema}\"*\n\n"
+        "😴 Descansa um pouco antes da noite"
+    )
+
+
+def msg_faculdade():
+    d    = dia_semana()
+    aula = get_aula_hoje()
+
+    if d == 2:  # quarta
+        return "🏃 *Hora do exercício!* Sem aula hoje — bora treinar 💪"
+
+    if aula:
+        return f"🎓 *19h — {aula['nome']}*\n{aula['sala']}\n\nBoa aula, Murilo! 📚"
+
+    if d >= 5:  # fds
+        return "🌙 *Boa noite!* Sem aula hoje. Aproveita bem o descanso 😴"
+
+    return "🎓 *19h — Faculdade!*\nChegou a hora. Foca!"
+
+
+def msg_checkin():
+    d    = dia_semana()
+    ex   = get_info_exercicio()
+    ex_linha = f"\n{ex}?" if ex else ""
+    return (
+        "📋 *Check-in do dia!*\n\n"
+        "Passa um olho no que você fez:\n\n"
+        "🌅 Rotina matinal?\n"
+        "📖 Curso (1h)?\n"
+        "💻 Quantas horas de prática hoje?\n"
+        "📝 Quantas horas de estudo?"
+        f"{ex_linha}\n"
+        "🇬🇧 Inglês (manhã e intervalo)?\n"
+        "🥗 Almoço de verdade?\n"
+        "🍎 Lanche saudável?\n\n"
+        "_Cada missão feita é ponto. Amanhã tem mais._ 💪"
+    )
+
+
+def msg_rezar():
+    return "🙏 *Antes de fechar os olhos — bora rezar.*\n\nBoas noites, Murilo. Descansa bem 🌙"
 
 
 # =============================================================================
@@ -111,36 +174,16 @@ def construir_teclado(chaves, tarefas):
 # =============================================================================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Chamado automaticamente toda vez que o usuário envia uma mensagem de texto.
+    texto   = update.message.text
+    chat_id = update.effective_chat.id
 
-    O que faz:
-    1. Extrai o texto e o chat_id da mensagem recebida
-    2. Salva o chat_id no JSON (necessário para o agendador enviar mensagens)
-    3. Mostra "digitando..." enquanto o agente processa (feedback visual)
-    4. Passa o texto para o agente LangChain (processar_mensagem)
-    5. Envia a resposta de volta para o usuário
-
-    O agente LangChain (agente.py) interpreta a mensagem em linguagem natural
-    e decide sozinho qual ferramenta de tools.py usar.
-    Ex: "fiz o exercício" → agente chama marcar_tarefa("exercicio")
-    """
-    texto   = update.message.text          # Texto que o usuário digitou
-    chat_id = update.effective_chat.id     # ID único do chat
-
-    # Salva o chat_id no arquivo de dados para o agendador poder usar
     dados = carregar()
     if dados.get("chat_id") is None:
         dados["chat_id"] = chat_id
         salvar(dados)
 
-    # Mostra animação de "digitando..." enquanto o agente pensa
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-
-    # Passa o texto para o agente LangChain processar e retorna a resposta
     resposta = processar_mensagem(texto)
-
-    # Envia a resposta de volta para o usuário
     await update.message.reply_text(resposta)
 
 
@@ -149,38 +192,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =============================================================================
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Chamado automaticamente quando o usuário clica em um botão inline (✅/⬜).
+    query   = update.callback_query
+    chat_id = query.message.chat_id
+    cb_data = query.data
 
-    O que faz:
-    1. Recebe o callback_data do botão clicado (ex: 'done:exercicio')
-    2. Identifica qual tarefa foi clicada
-    3. Toggle: se estava feita → desmarca, se estava pendente → marca
-    4. Salva os dados atualizados
-    5. Atualiza os botões da mensagem original para refletir o novo estado
-    6. Envia confirmação breve (+X pts! ou Desmarcado)
-    """
-    query   = update.callback_query        # Objeto com os dados do clique
-    chat_id = query.message.chat_id        # ID do chat onde o clique ocorreu
-    cb_data = query.data                   # Dado do botão (ex: 'done:exercicio')
-
-    await query.answer()  # Obrigatório: remove o loading/spinner do botão clicado
+    await query.answer()
 
     dados   = carregar()
     tarefas = dados.get("tarefas", {})
 
-    # ── Clique em botão de tarefa ──────────────────────────────────────────────
     if cb_data.startswith("done:"):
-        chave = cb_data.split(":", 1)[1]   # Extrai a chave (ex: 'exercicio')
+        chave = cb_data.split(":", 1)[1]
 
         if chave in tarefas:
             t = tarefas[chave]
-
-            # Toggle: inverte o estado done (True → False, False → True)
             t["done"] = not t["done"]
             salvar(dados)
 
-            # Descobre quais chaves estavam no teclado desta mensagem
             chaves_atuais = [
                 btn.callback_data.split(":", 1)[1]
                 for row in query.message.reply_markup.inline_keyboard
@@ -188,20 +216,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if btn.callback_data and btn.callback_data.startswith("done:")
             ]
 
-            # Reconstrói o teclado com o novo estado (✅ ou ⬜ atualizado)
             novo_teclado = construir_teclado(chaves_atuais, tarefas)
             await query.edit_message_reply_markup(reply_markup=novo_teclado)
 
-            # Envia confirmação breve
             if t["done"]:
                 await context.bot.send_message(chat_id, f"🎉 +{t['points']} pts!")
             else:
                 await context.bot.send_message(chat_id, "↩️ Desmarcado.")
 
-    # ── Clique no botão "Ver pontuação" ───────────────────────────────────────
     elif cb_data == "status":
-        pts     = sum(t["points"] for t in tarefas.values() if t.get("done"))
-        pts_max = sum(t["points"] for t in tarefas.values())
+        tarefas_ativas = {k: v for k, v in tarefas.items() if not v.get("cancelado")}
+        pts     = sum(t["points"] for t in tarefas_ativas.values() if t.get("done"))
+        pts_max = sum(t["points"] for t in tarefas_ativas.values())
         pct     = int(pts / pts_max * 100) if pts_max else 0
         barra   = "█" * int(pct / 10) + "░" * (10 - int(pct / 10))
         await context.bot.send_message(
@@ -212,78 +238,87 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =============================================================================
-# AGENDADOR — MENSAGENS AUTOMÁTICAS NOS HORÁRIOS CERTOS
+# AGENDADOR — MENSAGENS AUTOMÁTICAS
 # =============================================================================
-
-# Tabela de horários: (hora, minuto, identificador_do_bloco)
-# Todos os horários são em Brasília (UTC-3)
-HORARIOS = [
-    (7,  30, "briefing"),      # Briefing completo com todos os blocos do dia
-    (12,  0, "almoco"),        # Lembrete do bloco do almoço
-    (18,  0, "entretempo"),    # Lembrete do intervalo entre trabalho e faculdade
-    (19,  0, "faculdade"),     # Lembrete do bloco da faculdade
-    (23,  0, "resumo"),        # Resumo de pontos do final do dia
-]
-
-# Textos das mensagens automáticas para cada bloco
-MSGS = {
-    "almoco":     "⏰ *12h — Almoço!*\n\nDuas missões agora:\n🥗 Almoço de verdade\n🇬🇧 Inglês por 20 min",
-    "entretempo": "⏰ *18h — Intervalo!*\n\nAntes da faculdade:\n🎧 Inglês sem legenda\n😴 Descansa de verdade",
-    "faculdade":  "🎓 *19h — Faculdade!*\n\nSuas tarefas de hoje 👇",
-    "resumo":     "🌙 *Resumo do dia!*\n\nComo foi? Digite qualquer coisa para ver os pontos.",
-}
 
 async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
     """
-    Função chamada pelo JobQueue a cada 60 segundos.
-
-    O que faz:
-    1. Pega o horário atual em Brasília (UTC-3)
-    2. Verifica se é hora de enviar alguma das mensagens agendadas
-    3. Usa uma chave única (data + hora + slug) para garantir que cada
-       mensagem seja enviada apenas UMA VEZ por dia
-    4. Para o briefing: envia mensagem introdutória + um bloco por mensagem
-    5. Para outros blocos: envia a mensagem com botões das tarefas do bloco
-    6. Marca o envio como feito para não repetir
-
-    Por que a cada 60 segundos?
-    O JobQueue não garante execução no segundo exato, então verificamos
-    frequentemente e usamos a chave única para evitar mensagens duplicadas.
+    Roda a cada 60 segundos.
+    1. Inicializa o dia se ainda não foi inicializado
+    2. Verifica alertas customizados agendados pelo usuário
+    3. Envia mensagens nos horários programados
     """
     agora   = agora_br()
     hoje    = agora.date().isoformat()
     h, m    = agora.hour, agora.minute
-    dados   = carregar()
+
+    # Garante que o dia está inicializado (idempotente)
+    dados   = inicializar_dia()
     chat_id = dados.get("chat_id")
 
-    # Só executa se o usuário já tiver ativado o bot
     if not chat_id:
         return
 
+    tarefas  = dados.get("tarefas", {})
     enviados = dados.get("enviados", [])
 
+    # ── Alertas customizados (agendar_lembrete) ───────────────────────────────
+    alertas_pendentes = dados.get("alertas", [])
+    alertas_alterados = False
+
+    for alerta in alertas_pendentes:
+        if alerta.get("enviado"):
+            continue
+        try:
+            ah, am = map(int, alerta["hora"].split(":"))
+        except Exception:
+            continue
+        if h == ah and m == am:
+            await context.bot.send_message(
+                chat_id,
+                f"⏰ *Lembrete:* {alerta['texto']}",
+                parse_mode="Markdown"
+            )
+            alerta["enviado"] = True
+            alertas_alterados = True
+
+    if alertas_alterados:
+        dados["alertas"] = alertas_pendentes
+        salvar(dados)
+
+    # ── Mensagens agendadas fixas ─────────────────────────────────────────────
     for hora_agend, min_agend, slug in HORARIOS:
-        # Chave única para este envio — garante que não repita no mesmo dia
         chave = f"{hoje}-{hora_agend}:{min_agend:02d}-{slug}"
 
         if h == hora_agend and m == min_agend and chave not in enviados:
 
-            if slug == "briefing":
-                # ── Briefing das 7h30 ────────────────────────────────────────
-                tarefas = dados.get("tarefas", {})
-                pts_max = sum(t["points"] for t in tarefas.values())
+            # ── 7h00 — Rotina matinal ─────────────────────────────────────────
+            if slug == "rotina":
+                chaves = [k for k, t in tarefas.items() if t.get("bloco") == "rotina"]
+                teclado = construir_teclado(chaves, tarefas)
+                await context.bot.send_message(
+                    chat_id, msg_rotina(),
+                    parse_mode="Markdown",
+                    reply_markup=teclado
+                )
+
+            # ── 7h30 — Briefing completo ──────────────────────────────────────
+            elif slug == "briefing":
+                pts_max = sum(t["points"] for t in tarefas.values() if not t.get("cancelado"))
 
                 await context.bot.send_message(
                     chat_id,
-                    f"🌅 *Bom dia, Murilo!* Meta de hoje: *{pts_max} pts*\n\n"
+                    f"☀️ *Bom dia, Murilo!* Meta de hoje: *{pts_max} pts*\n\n"
                     "Escreve o que fez e eu registro automaticamente.\n"
-                    "Ex: 'fiz o exercício', 'já almocei', 'usei 20 min de instagram'",
+                    "_Ex: 'fiz o exercício', 'já almocei', 'cancela o inglês de hoje'_",
                     parse_mode="Markdown"
                 )
 
-                # Envia um bloco por mensagem, cada um com seus botões
                 for bloco, info in BLOCOS.items():
-                    chaves = [k for k, t in tarefas.items() if t.get("bloco") == bloco]
+                    if bloco == "rotina":
+                        continue  # rotina já enviada às 7h
+                    chaves = [k for k, t in tarefas.items()
+                              if t.get("bloco") == bloco and not t.get("cancelado")]
                     if chaves:
                         teclado = construir_teclado(chaves, tarefas)
                         await context.bot.send_message(
@@ -293,31 +328,39 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
                             reply_markup=teclado
                         )
 
-            elif slug == "resumo":
-                # ── Resumo das 23h ────────────────────────────────────────────
-                tarefas = dados.get("tarefas", {})
-                pts     = sum(t["points"] for t in tarefas.values() if t.get("done"))
-                pts_max = sum(t["points"] for t in tarefas.values())
-                pct     = int(pts / pts_max * 100) if pts_max else 0
-
-                if pct >= 80:   emoji_final = "🏆 Arrasou!"
-                elif pct >= 50: emoji_final = "💪 Bom esforço!"
-                else:           emoji_final = "📈 Amanhã é uma nova chance."
-
+            # ── 12h00 — Almoço ────────────────────────────────────────────────
+            elif slug == "almoco":
+                chaves  = [k for k, t in tarefas.items() if t.get("bloco") == "almoco"]
+                teclado = construir_teclado(chaves, tarefas)
                 await context.bot.send_message(
-                    chat_id,
-                    f"🌙 *Resumo do dia!*\n\n"
-                    f"Pontuação final: *{pts}/{pts_max} pts* ({pct}%)\n\n"
-                    f"{emoji_final}",
+                    chat_id, msg_almoco(),
+                    parse_mode="Markdown",
+                    reply_markup=teclado
+                )
+
+            # ── 12h45 — Pós-almoço: inglês com tema ──────────────────────────
+            elif slug == "pos_almoco":
+                dados_atuais = carregar()
+                await context.bot.send_message(
+                    chat_id, msg_pos_almoco(dados_atuais),
                     parse_mode="Markdown"
                 )
 
-            else:
-                # ── Outros blocos (almoço, entretempo, faculdade) ─────────────
-                tarefas = dados.get("tarefas", {})
-                chaves  = [k for k, t in tarefas.items() if t.get("bloco") == slug]
-                msg     = MSGS.get(slug, "")
+            # ── 17h55 — Intervalo das 18h ─────────────────────────────────────
+            elif slug == "entretempo":
+                dados_atuais = carregar()
+                chaves  = [k for k, t in tarefas.items() if t.get("bloco") == "entretempo"]
+                teclado = construir_teclado(chaves, tarefas)
+                await context.bot.send_message(
+                    chat_id, msg_entretempo(dados_atuais),
+                    parse_mode="Markdown",
+                    reply_markup=teclado
+                )
 
+            # ── 19h00 — Faculdade ─────────────────────────────────────────────
+            elif slug == "faculdade":
+                chaves = [k for k, t in tarefas.items() if t.get("bloco") == "faculdade"]
+                msg    = msg_faculdade()
                 if chaves:
                     teclado = construir_teclado(chaves, tarefas)
                     await context.bot.send_message(
@@ -326,14 +369,44 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=teclado
                     )
                 else:
-                    # Bloco sem tarefas (ex: faculdade sem nenhuma adicionada)
                     await context.bot.send_message(
-                        chat_id,
-                        msg + "\n\n_(Sem tarefas. Diga 'adiciona tarefa X' para adicionar.)_",
+                        chat_id, msg,
                         parse_mode="Markdown"
                     )
 
-            # Marca como enviado para não repetir hoje
+            # ── 21h30 — Check-in noturno ──────────────────────────────────────
+            elif slug == "checkin":
+                await context.bot.send_message(
+                    chat_id, msg_checkin(),
+                    parse_mode="Markdown"
+                )
+
+            # ── 22h30 — Rezar ─────────────────────────────────────────────────
+            elif slug == "rezar":
+                await context.bot.send_message(
+                    chat_id, msg_rezar(),
+                    parse_mode="Markdown"
+                )
+
+            # ── 23h00 — Resumo final ──────────────────────────────────────────
+            elif slug == "resumo":
+                tarefas_ativas = {k: v for k, v in tarefas.items() if not v.get("cancelado")}
+                pts     = sum(t["points"] for t in tarefas_ativas.values() if t.get("done"))
+                pts_max = sum(t["points"] for t in tarefas_ativas.values())
+                pct     = int(pts / pts_max * 100) if pts_max else 0
+
+                if pct >= 80:   emoji = "🏆 Arrasou!"
+                elif pct >= 50: emoji = "💪 Bom esforço!"
+                else:           emoji = "📈 Amanhã é uma nova chance."
+
+                await context.bot.send_message(
+                    chat_id,
+                    f"🌙 *Resumo do dia!*\n\n"
+                    f"Pontuação final: *{pts}/{pts_max} pts* ({pct}%)\n\n"
+                    f"{emoji}",
+                    parse_mode="Markdown"
+                )
+
             enviados.append(chave)
             dados["enviados"] = enviados
             salvar(dados)
@@ -344,36 +417,20 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
 # =============================================================================
 
 def main():
-    """
-    Ponto de entrada da aplicação.
-
-    O que faz:
-    1. Lê o token do bot do arquivo .env
-    2. Cria a aplicação com python-telegram-bot
-    3. Registra os handlers (quem processa o quê):
-       - MessageHandler     → mensagens de texto → handle_message()
-       - CallbackQueryHandler → cliques em botões → handle_callback()
-    4. Configura o JobQueue para rodar enviar_notificacao() a cada 60 segundos
-    5. Inicia o polling — fica perguntando ao Telegram se há mensagens novas
-    """
     token = os.getenv("BOT_TOKEN")
+
+    # Inicializa o dia já no startup (cria tarefas se necessário)
+    inicializar_dia()
 
     app = ApplicationBuilder().token(token).build()
 
-    # Registra handler de mensagens de texto
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # Registra handler de cliques em botões inline
     app.add_handler(CallbackQueryHandler(handle_callback))
 
-    # Agendador: roda enviar_notificacao() a cada 60 segundos
-    # interval=60 → intervalo entre execuções (segundos)
-    # first=10    → aguarda 10 segundos antes da primeira execução
+    # Agendador a cada 60 segundos
     app.job_queue.run_repeating(enviar_notificacao, interval=60, first=10)
 
     print("🤖 Murilo Agent rodando! (Ctrl+C para parar)")
-
-    # drop_pending_updates=True → ignora mensagens recebidas enquanto o bot estava offline
     app.run_polling(drop_pending_updates=True)
 
 
