@@ -18,9 +18,9 @@ from telegram.ext import (
 
 from agente import processar_mensagem
 from tools import (
-    carregar, salvar, BLOCOS, AULAS,
+    carregar, salvar, BLOCOS, BLOCOS_SABADO, BLOCOS_DOMINGO, AULAS,
     inicializar_dia, get_aula_hoje, get_info_exercicio, sortear_tema,
-    agora_br, hoje_br, dia_semana,
+    get_blocos_do_dia, agora_br, hoje_br, dia_semana,
 )
 from dotenv import load_dotenv
 import os, datetime
@@ -34,7 +34,7 @@ load_dotenv()
 
 HORARIOS = [
     (7,  0,  "rotina"),       # Rotina matinal — meditação, banho, dentes, creme
-    (7,  30, "briefing"),     # Briefing completo com todos os blocos
+    (7,  30, "lista_dia"),    # Lista simples com todas as tarefas do dia
     (12, 0,  "almoco"),       # Lembrete do almoço
     (12, 45, "pos_almoco"),   # Pós-almoço — dentes + inglês com tema
     (17, 55, "entretempo"),   # Intervalo das 18h — inglês + aula do dia
@@ -43,6 +43,40 @@ HORARIOS = [
     (22, 30, "rezar"),        # Lembrete para rezar antes de dormir
     (23, 0,  "resumo"),       # Pontuação final do dia
 ]
+
+# =============================================================================
+# HORÁRIOS DE FIM DE SEMANA
+# =============================================================================
+
+HORARIOS_SABADO = [
+    (10, 0,  "rotina"),
+    (10, 30, "lista_dia"),
+    (12, 0,  "estudo_sab"),
+    (17, 30, "ingles_sab"),
+    (19, 0,  "organizacao"),
+    (21, 30, "checkin"),
+    (22, 30, "rezar"),
+    (23, 0,  "resumo"),
+]
+
+HORARIOS_DOMINGO = [
+    (10, 0,  "rotina"),
+    (10, 30, "lista_dia"),
+    (15, 30, "treino_dom"),
+    (21, 30, "checkin"),
+    (22, 30, "rezar"),
+    (23, 0,  "resumo"),
+]
+
+
+def get_horarios_do_dia():
+    """Retorna a lista de horários correta pro dia da semana."""
+    d = dia_semana()
+    if d == 5:
+        return HORARIOS_SABADO
+    if d == 6:
+        return HORARIOS_DOMINGO
+    return HORARIOS
 
 
 # =============================================================================
@@ -169,6 +203,36 @@ def msg_rezar():
     return "🙏 *Antes de fechar os olhos — bora rezar.*\n\nBoas noites, Murilo. Descansa bem 🌙"
 
 
+def msg_estudo_sab():
+    return (
+        "📖 *12h — Hora de estudar!*\n\n"
+        "Sábado é dia de revisar e praticar.\n"
+        "_Foca no que viu na semana._ 💪"
+    )
+
+
+def msg_ingles_sab(dados):
+    tema = sortear_tema(dados)
+    return (
+        f"🇬🇧 *17h30 — Inglês!*\n\n"
+        f"📱 LingQ — tema: *\"{tema}\"*\n"
+        f"_(dificuldade: {dados.get('config_ingles', {}).get('dificuldade', 'medio')})_"
+    )
+
+
+def msg_organizacao():
+    return (
+        "📋 *19h — Organização!*\n\n"
+        "💰 Financeiro — contas, gastos, pendências\n"
+        "📋 Semanal — o que foi feito, o que falta\n\n"
+        "_Organiza agora pra semana começar leve._ 🧠"
+    )
+
+
+def msg_treino_dom():
+    return "🏃 *15h30 — Hora do treino!*\n\nDomingo é dia de mexer o corpo. Bora! 💪"
+
+
 # =============================================================================
 # HANDLER DE MENSAGENS DE TEXTO
 # =============================================================================
@@ -287,7 +351,10 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
         salvar(dados)
 
     # ── Mensagens agendadas fixas ─────────────────────────────────────────────
-    for hora_agend, min_agend, slug in HORARIOS:
+    horarios_hoje = get_horarios_do_dia()
+    blocos_hoje   = get_blocos_do_dia()
+
+    for hora_agend, min_agend, slug in horarios_hoje:
         chave = f"{hoje}-{hora_agend}:{min_agend:02d}-{slug}"
 
         if h == hora_agend and m == min_agend and chave not in enviados:
@@ -302,31 +369,28 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=teclado
                 )
 
-            # ── 7h30 — Briefing completo ──────────────────────────────────────
-            elif slug == "briefing":
+            # ── Lista do dia (substitui briefing) ─────────────────────────────
+            elif slug == "lista_dia":
+                tarefas_ativas = {k: v for k, v in tarefas.items()
+                                  if not v.get("cancelado") and v.get("bloco") != "rotina"}
                 pts_max = sum(t["points"] for t in tarefas.values() if not t.get("cancelado"))
 
+                linhas = [f"☀️ *Bom dia, Murilo!* Meta: *{pts_max} pts*\n"]
+                for bloco, info in blocos_hoje.items():
+                    if bloco == "rotina":
+                        continue
+                    nomes = [t["name"] for k, t in tarefas.items()
+                             if t.get("bloco") == bloco and not t.get("cancelado")]
+                    if nomes:
+                        linhas.append(f"\n*{info['titulo']}*")
+                        for n in nomes:
+                            linhas.append(f"  • {n}")
+
+                linhas.append("\n_Escreve o que fez e eu registro._")
                 await context.bot.send_message(
-                    chat_id,
-                    f"☀️ *Bom dia, Murilo!* Meta de hoje: *{pts_max} pts*\n\n"
-                    "Escreve o que fez e eu registro automaticamente.\n"
-                    "_Ex: 'fiz o exercício', 'já almocei', 'cancela o inglês de hoje'_",
+                    chat_id, "\n".join(linhas),
                     parse_mode="Markdown"
                 )
-
-                for bloco, info in BLOCOS.items():
-                    if bloco == "rotina":
-                        continue  # rotina já enviada às 7h
-                    chaves = [k for k, t in tarefas.items()
-                              if t.get("bloco") == bloco and not t.get("cancelado")]
-                    if chaves:
-                        teclado = construir_teclado(chaves, tarefas)
-                        await context.bot.send_message(
-                            chat_id,
-                            f"*{info['titulo']}*",
-                            parse_mode="Markdown",
-                            reply_markup=teclado
-                        )
 
             # ── 12h00 — Almoço ────────────────────────────────────────────────
             elif slug == "almoco":
@@ -386,6 +450,56 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(
                     chat_id, msg_rezar(),
                     parse_mode="Markdown"
+                )
+
+            # ── Sábado: 12h — Estudo ──────────────────────────────────────────
+            elif slug == "estudo_sab":
+                chaves  = [k for k, t in tarefas.items() if t.get("bloco") == "estudo"]
+                teclado = construir_teclado(chaves, tarefas)
+                await context.bot.send_message(
+                    chat_id, msg_estudo_sab(),
+                    parse_mode="Markdown",
+                    reply_markup=teclado
+                )
+                # Também mostra tarefas de faculdade do sábado (se houver)
+                chaves_fac = [k for k, t in tarefas.items() if t.get("bloco") == "faculdade"]
+                if chaves_fac:
+                    teclado_fac = construir_teclado(chaves_fac, tarefas)
+                    await context.bot.send_message(
+                        chat_id, "*📚 Tarefas de faculdade para hoje:*",
+                        parse_mode="Markdown",
+                        reply_markup=teclado_fac
+                    )
+
+            # ── Sábado: 17h30 — Inglês ───────────────────────────────────────
+            elif slug == "ingles_sab":
+                dados_atuais = carregar()
+                chaves  = [k for k, t in tarefas.items() if t.get("bloco") == "ingles"]
+                teclado = construir_teclado(chaves, tarefas)
+                await context.bot.send_message(
+                    chat_id, msg_ingles_sab(dados_atuais),
+                    parse_mode="Markdown",
+                    reply_markup=teclado
+                )
+
+            # ── Sábado: 19h — Organização ─────────────────────────────────────
+            elif slug == "organizacao":
+                chaves  = [k for k, t in tarefas.items() if t.get("bloco") == "organizacao"]
+                teclado = construir_teclado(chaves, tarefas)
+                await context.bot.send_message(
+                    chat_id, msg_organizacao(),
+                    parse_mode="Markdown",
+                    reply_markup=teclado
+                )
+
+            # ── Domingo: 15h30 — Treino ───────────────────────────────────────
+            elif slug == "treino_dom":
+                chaves  = [k for k, t in tarefas.items() if t.get("bloco") == "treino"]
+                teclado = construir_teclado(chaves, tarefas)
+                await context.bot.send_message(
+                    chat_id, msg_treino_dom(),
+                    parse_mode="Markdown",
+                    reply_markup=teclado
                 )
 
             # ── 23h00 — Resumo final ──────────────────────────────────────────

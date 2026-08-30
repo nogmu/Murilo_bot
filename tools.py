@@ -17,7 +17,7 @@ BLOCOS = {
     "rotina": {
         "titulo": "🌅 Rotina Matinal",
         "tasks": {
-            "meditacao":    {"name": "🧘 Meditação",       "points": 10},
+            "meditacao":    {"name": "🧘 Meditação / Yoga",  "points": 10},
             "banho":        {"name": "🚿 Banho",            "points": 5},
             "dentes_manha": {"name": "🦷 Dentes + Creme",  "points": 10},
         }
@@ -35,14 +35,13 @@ BLOCOS = {
         "tasks": {
             "almoco":        {"name": "🥗 Almoço de verdade",   "points": 20},
             "dentes_almoco": {"name": "🦷 Dentes após almoço",  "points": 10},
-            "ingles1":       {"name": "🇬🇧 Inglês 20 min",       "points": 25},
-            "lanche":        {"name": "🍎 Lanche saudável",      "points": 15},
+            "lingq":         {"name": "📱 LingQ (inglês)",         "points": 25},
         }
     },
     "entretempo": {
         "titulo": "⏳ Intervalo (18h–19h)",
         "tasks": {
-            "ingles2":  {"name": "🎧 Inglês (podcast)", "points": 20},
+            "ingles2":  {"name": "🎬 Filme/série + debate com IA (inglês)", "points": 20},
             "descanso": {"name": "😴 Descanso real",    "points": 20},
         }
     },
@@ -51,6 +50,86 @@ BLOCOS = {
         "tasks": {}  # Preenchido dinamicamente com adicionar_tarefa
     },
 }
+
+# =============================================================================
+# BLOCOS DE SÁBADO
+# =============================================================================
+
+BLOCOS_SABADO = {
+    "rotina": {
+        "titulo": "🌅 Rotina Matinal (Sábado)",
+        "tasks": {
+            "meditacao":      {"name": "🧘 Meditação / Yoga",  "points": 10},
+            "rezar_manha":    {"name": "🙏 Rezar",             "points": 5},
+            "descanso_manha": {"name": "☕ Descanso / Café",    "points": 5},
+        }
+    },
+    "estudo": {
+        "titulo": "📖 Estudo (12h)",
+        "tasks": {
+            "estudo_sab": {"name": "📖 Estudo do dia", "points": 30},
+        }
+    },
+    "ingles": {
+        "titulo": "🇬🇧 Inglês (17h30)",
+        "tasks": {
+            "lingq_sab": {"name": "📱 LingQ (inglês)", "points": 20},
+        }
+    },
+    "organizacao": {
+        "titulo": "📋 Organização (19h)",
+        "tasks": {
+            "financeiro": {"name": "💰 Organização financeira", "points": 15},
+            "semanal":    {"name": "📋 Organização semanal",    "points": 15},
+        }
+    },
+    "faculdade": {
+        "titulo": "📚 Faculdade (Sábado)",
+        "tasks": {}  # Preenchido via adicionar_tarefa — praticar o que viu na aula
+    },
+}
+
+# =============================================================================
+# BLOCOS DE DOMINGO
+# =============================================================================
+
+BLOCOS_DOMINGO = {
+    "rotina": {
+        "titulo": "🌅 Rotina Matinal (Domingo)",
+        "tasks": {
+            "meditacao":   {"name": "🧘 Meditação / Yoga",  "points": 10},
+            "rezar_manha": {"name": "🙏 Rezar",             "points": 5},
+            "banho_sol":   {"name": "☀️ Banho de sol",       "points": 10},
+        }
+    },
+    "treino": {
+        "titulo": "🏃 Treino (15h30)",
+        "tasks": {
+            "treino": {"name": "🏃 Treino", "points": 30},
+        }
+    },
+}
+
+# =============================================================================
+# TAREFAS PERIÓDICAS (quinzenal / mensal) — aparecem no sábado
+# =============================================================================
+
+TAREFAS_PERIODICAS = [
+    {
+        "chave": "psicologa",
+        "name": "🧠 Psicóloga",
+        "points": 15,
+        "bloco": "estudo",          # aparece junto com estudo no sábado
+        "frequencia_dias": 15,      # quinzenal
+    },
+    {
+        "chave": "trancas",
+        "name": "💇 Tranças",
+        "points": 10,
+        "bloco": "organizacao",
+        "frequencia_dias": 30,      # mensal
+    },
+]
 
 # =============================================================================
 # GRADE DE AULAS
@@ -138,6 +217,16 @@ def sortear_tema(dados=None):
     temas  = TEMAS_INGLES.get(nivel, TEMAS_INGLES["medio"])
     return random.choice(temas)
 
+def get_blocos_do_dia():
+    """Retorna os blocos corretos baseado no dia da semana."""
+    d = dia_semana()
+    if d == 5:  # sábado
+        return BLOCOS_SABADO
+    if d == 6:  # domingo
+        return BLOCOS_DOMINGO
+    return BLOCOS  # seg-sex
+
+
 def carregar():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE) as f:
@@ -173,8 +262,9 @@ def inicializar_dia():
 
     novas_tarefas = {}
 
-    # Popula tarefas fixas dos blocos
-    for bloco, info in BLOCOS.items():
+    # Popula tarefas fixas dos blocos (escolhe seg-sex / sáb / dom)
+    blocos_hoje = get_blocos_do_dia()
+    for bloco, info in blocos_hoje.items():
         for chave, t in info["tasks"].items():
             novas_tarefas[chave] = {
                 "name":   t["name"],
@@ -195,6 +285,25 @@ def inicializar_dia():
             "done":   False,
             "bloco":  bloco_ex,
         }
+
+    # Tarefas periódicas (quinzenal/mensal) — só no sábado
+    if dia_semana() == 5:
+        periodicas_feitas = dados.get("periodicas_feitas", {})
+        for tp in TAREFAS_PERIODICAS:
+            ultima = periodicas_feitas.get(tp["chave"])
+            incluir = True
+            if ultima:
+                dias_desde = (hoje_br() - datetime.date.fromisoformat(ultima)).days
+                if dias_desde < tp["frequencia_dias"]:
+                    incluir = False
+            if incluir:
+                novas_tarefas[tp["chave"]] = {
+                    "name":   tp["name"],
+                    "points": tp["points"],
+                    "done":   False,
+                    "bloco":  tp["bloco"],
+                    "periodica": True,
+                }
 
     # Reincorpora custom tasks (desmarcadas)
     for k, v in custom.items():
@@ -271,6 +380,11 @@ def marcar_tarefa(nome_parcial: str) -> str:
     for chave, t in tarefas.items():
         if nome_lower in t["name"].lower() and not t.get("done") and not t.get("cancelado"):
             t["done"] = True
+            # Registra data de conclusão para tarefas periódicas
+            if t.get("periodica"):
+                periodicas = dados.get("periodicas_feitas", {})
+                periodicas[chave] = hoje_br().isoformat()
+                dados["periodicas_feitas"] = periodicas
             salvar(dados)
             return f"🎉 '{t['name']}' marcada! +{t['points']} pts"
 
