@@ -51,10 +51,13 @@ HORARIOS = [
 HORARIOS_SABADO = [
     (10, 0,  "rotina"),
     (10, 30, "lista_dia"),
+    (11, 0,  "autocuidado_banho"),
     (12, 0,  "estudo_sab"),
+    (15, 0,  "autocuidado_almoco"),
     (17, 30, "ingles_sab"),
     (19, 0,  "organizacao"),
     (21, 30, "checkin"),
+    (22, 0,  "autocuidado_janta"),
     (22, 30, "rezar"),
     (23, 0,  "resumo"),
 ]
@@ -62,8 +65,11 @@ HORARIOS_SABADO = [
 HORARIOS_DOMINGO = [
     (10, 0,  "rotina"),
     (10, 30, "lista_dia"),
+    (11, 0,  "autocuidado_banho"),
+    (15, 0,  "autocuidado_almoco"),
     (15, 30, "treino_dom"),
     (21, 30, "checkin"),
+    (22, 0,  "autocuidado_janta"),
     (22, 30, "rezar"),
     (23, 0,  "resumo"),
 ]
@@ -338,11 +344,30 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             continue
         if h == ah and m == am:
-            await context.bot.send_message(
-                chat_id,
-                f"⏰ *Lembrete:* {alerta['texto']}",
-                parse_mode="Markdown"
-            )
+            chave_reabrir = alerta.get("reabrir_chave")
+
+            if chave_reabrir and chave_reabrir in tarefas:
+                # Lembrete veio de ajustar_agenda/confirmar_ajuste_agenda:
+                # reabre a tarefa que tinha sido cancelada por causa do
+                # reagendamento, e manda o teclado pra marcar direto.
+                t = tarefas[chave_reabrir]
+                t["cancelado"] = False
+                t["done"] = False
+                teclado = construir_teclado([chave_reabrir], tarefas)
+                await context.bot.send_message(
+                    chat_id,
+                    f"⏰ *Hora reagendada:* {alerta['texto']}",
+                    parse_mode="Markdown",
+                    reply_markup=teclado
+                )
+                dados["tarefas"] = tarefas
+            else:
+                await context.bot.send_message(
+                    chat_id,
+                    f"⏰ *Lembrete:* {alerta['texto']}",
+                    parse_mode="Markdown"
+                )
+
             alerta["enviado"] = True
             alertas_alterados = True
 
@@ -491,6 +516,60 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown",
                     reply_markup=teclado
                 )
+
+            # ── FDS: 11h — Autocuidado (banho premium + dentes) ───────────────
+            elif slug == "autocuidado_banho":
+                chaves = [
+                    k for k, t in tarefas.items()
+                    if t.get("bloco") == "autocuidado" and k in (
+                        "banho_premium_sab", "dentes_11h_sab",
+                        "banho_premium_dom", "dentes_11h_dom",
+                    )
+                ]
+                if chaves:
+                    teclado = construir_teclado(chaves, tarefas)
+                    await context.bot.send_message(
+                        chat_id,
+                        "🛁 *11h — Autocuidado!*\n\nBanho premium + escovar os dentes.",
+                        parse_mode="Markdown",
+                        reply_markup=teclado
+                    )
+
+            # ── FDS: 15h — Autocuidado (almoço + dentes) ──────────────────────
+            elif slug == "autocuidado_almoco":
+                chaves = [
+                    k for k, t in tarefas.items()
+                    if t.get("bloco") == "autocuidado" and k in (
+                        "almoco_sab", "dentes_almoco_sab",
+                        "almoco_dom", "dentes_almoco_dom", "caminhada_dom",
+                    )
+                ]
+                if chaves:
+                    teclado = construir_teclado(chaves, tarefas)
+                    await context.bot.send_message(
+                        chat_id,
+                        "🍽️ *15h — Almoço!*\n\nComer + escovar os dentes depois.",
+                        parse_mode="Markdown",
+                        reply_markup=teclado
+                    )
+
+            # ── FDS: 22h — Autocuidado (janta + dentes) ───────────────────────
+            elif slug == "autocuidado_janta":
+                chaves = [
+                    k for k, t in tarefas.items()
+                    if t.get("bloco") == "autocuidado" and k in (
+                        "janta_sab", "dentes_janta_sab",
+                        "janta_dom", "dentes_janta_dom",
+                    )
+                ]
+                if chaves:
+                    teclado = construir_teclado(chaves, tarefas)
+                    await context.bot.send_message(
+                        chat_id,
+                        "🍽️ *22h — Janta!*\n\nComer + escovar os dentes antes de dormir.",
+                        parse_mode="Markdown",
+                        reply_markup=teclado
+                    )
 
             # ── Domingo: 15h30 — Treino ───────────────────────────────────────
             elif slug == "treino_dom":
