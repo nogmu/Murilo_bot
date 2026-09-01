@@ -17,6 +17,8 @@
 from langchain_core.tools import tool
 import json, os, datetime, random
 import logging
+import re
+import unicodedata
 
 logger = logging.getLogger("agente")
 
@@ -37,9 +39,8 @@ BLOCOS = {
     "manha": {
         "titulo": "💼 Trabalho (9h–12h)",
         "tasks": {
-            "curso":   {"name": "📖 Curso (1h)",  "points": 25},
-            "pratica": {"name": "💻 Prática",     "points": 35},  # mais pontos!
-            "estudo":  {"name": "📝 Estudo",      "points": 25},
+            "curso":   {"name": "📖 Curso (1h)",  "points": 10},
+            "pratica": {"name": "💻 Prática",     "points": 15},
         }
     },
     "almoco": {
@@ -53,8 +54,9 @@ BLOCOS = {
     "entretempo": {
         "titulo": "⏳ Intervalo (18h–19h)",
         "tasks": {
-            "ingles2":  {"name": "🎬 Filme/série + debate com IA (inglês)", "points": 20},
-            "descanso": {"name": "😴 Descanso real",                        "points": 20},
+            "filme_serie": {"name": "🎬 Filme/série em inglês", "points": 20},
+            "ia_ingles":   {"name": "💬 Conversa com IA em inglês", "points": 20},
+            "descanso":    {"name": "😴 Descanso real", "points": 20},
         }
     },
     "faculdade": {
@@ -592,6 +594,15 @@ def adicionar_tarefa(nome: str, bloco: str, pontos: int = 30, tipo: str = "rapid
     return f"✅ Tarefa rápida '{nome}' adicionada no bloco '{bloco}' (+{pontos} pts) para {data_alvo}."
 
 
+def _normalizar_texto(texto: str) -> str:
+    """Remove acentos, emojis e pontuação para comparar nomes com mais precisão."""
+    texto = unicodedata.normalize("NFKD", texto.lower())
+    texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+    texto = re.sub(r"[^a-z0-9\s]", " ", texto)
+    texto = re.sub(r"\s+", " ", texto).strip()
+    return texto
+
+
 @tool
 def marcar_tarefa(nome_parcial: str) -> str:
     """
@@ -599,31 +610,52 @@ def marcar_tarefa(nome_parcial: str) -> str:
     - nome_parcial: parte do nome da tarefa (ex: 'cálculo', 'inglês', 'exercício')
     Use quando o usuário disser que fez, terminou ou concluiu algo.
     """
-    dados      = carregar()
-    tarefas    = dados["tarefas"]
-    nome_lower = nome_parcial.lower()
+    dados = carregar()
+    tarefas = dados["tarefas"]
+    busca = _normalizar_texto(nome_parcial)
 
-    # Junta todas as correspondências antes de decidir, em vez de marcar a
-    # primeira que aparecer (evita marcar a tarefa errada em silêncio).
-    candidatas = [
-        (chave, t) for chave, t in tarefas.items()
-        if nome_lower in t["name"].lower() and not t.get("done") and not t.get("cancelado")
-    ]
+    if not busca:
+        return "Preciso do nome da tarefa para marcar como concluída."
+
+    candidatas = []
+    for chave, t in tarefas.items():
+        if t.get("done") or t.get("cancelado"):
+            continue
+        nome_norm = _normalizar_texto(t["name"])
+        score = 0
+
+        if busca == nome_norm:
+            score = 100
+        elif busca in nome_norm:
+            score = 80
+        elif nome_norm in busca:
+            score = 60
+        elif busca.replace(" ", "") in nome_norm.replace(" ", ""):
+            score = 50
+
+        if score:
+            candidatas.append({"chave": chave, "tarefa": t, "score": score, "nome": t["name"]})
 
     if not candidatas:
         return f"Não encontrei tarefa pendente com '{nome_parcial}'. Use ver_status para listar."
 
-    if len(candidatas) > 1:
-        nomes = ", ".join(t["name"] for _, t in candidatas)
-        return f"Encontrei mais de uma tarefa com '{nome_parcial}': {nomes}. Seja mais específico."
+    melhor_score = max(item["score"] for item in candidatas)
+    melhores = [item for item in candidatas if item["score"] == melhor_score]
 
-    chave, t = candidatas[0]
+    if len(melhores) > 1 and melhor_score < 100:
+        nomes = ", ".join(item["nome"] for item in melhores)
+        return f"Encontrei mais de uma tarefa parecida com '{nome_parcial}': {nomes}. Seja mais específico."
+
+    item = melhores[0]
+    chave = item["chave"]
+    t = item["tarefa"]
     t["done"] = True
-    # Registra data de conclusão para tarefas periódicas
+
     if t.get("periodica"):
         periodicas = dados.get("periodicas_feitas", {})
         periodicas[chave] = hoje_br().isoformat()
         dados["periodicas_feitas"] = periodicas
+
     salvar(dados)
     return f"🎉 '{t['name']}' marcada! +{t['points']} pts"
 

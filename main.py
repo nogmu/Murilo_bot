@@ -35,6 +35,7 @@ load_dotenv()
 HORARIOS = [
     (7,  0,  "rotina"),       # Rotina matinal — meditação, banho, dentes, creme
     (7,  30, "lista_dia"),    # Lista simples com todas as tarefas do dia
+    (9,  0,  "manha"),        # Lembrete do início do trabalho — curso e prática
     (12, 0,  "almoco"),       # Lembrete do almoço
     (12, 45, "pos_almoco"),   # Pós-almoço — dentes + inglês com tema
     (17, 55, "entretempo"),   # Intervalo das 18h — inglês + aula do dia
@@ -157,14 +158,16 @@ def msg_entretempo(dados):
     if aula:
         return (
             f"⏰ *18h — Intervalo!*\n\n"
-            "🎧 Inglês — podcast no caminho\n"
+            "� Filme/série em inglês\n"
+            "💬 Conversa com a IA em inglês\n"
             f"Tema: *\"{tema}\"*\n\n"
             f"📚 Hoje: {aula['nome']} — {aula['sala']}"
         )
 
     return (
         "⏰ *18h — Intervalo!*\n\n"
-        "🎧 Inglês — podcast ou música sem legenda PT\n"
+        "🎬 Filme/série em inglês\n"
+        "💬 Conversa com a IA em inglês\n"
         f"Tema: *\"{tema}\"*\n\n"
         "😴 Descansa um pouco antes da noite"
     )
@@ -415,6 +418,20 @@ async def enviar_notificacao(context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(
                     chat_id, "\n".join(linhas),
                     parse_mode="Markdown"
+                )
+
+            # ── 9h00 — Trabalho: curso + prática ─────────────────────────────
+            elif slug == "manha":
+                chaves  = [k for k, t in tarefas.items() if t.get("bloco") == "manha"]
+                teclado = construir_teclado(chaves, tarefas)
+                await context.bot.send_message(
+                    chat_id,
+                    "💼 *9h — Hora de trabalhar!*\n\n"
+                    "📖 Curso (1h)\n"
+                    "💻 Prática\n\n"
+                    "_Foca no que importa e vai com calma._",
+                    parse_mode="Markdown",
+                    reply_markup=teclado
                 )
 
             # ── 12h00 — Almoço ────────────────────────────────────────────────

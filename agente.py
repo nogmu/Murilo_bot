@@ -109,7 +109,7 @@ DIAS DE EXERCÍCIO:
 
 BLOCOS DO DIA (segunda a sexta):
 - rotina:     manhã cedo (meditação/yoga, banho, dentes + creme)
-- manha:      9h–12h (curso 1h, prática — mais pontos!, estudo)
+- manha:      9h–12h (curso 1h e prática; sem estudo)
 - almoco:     12h–13h (almoço de verdade, dentes após almoço, LingQ — inglês)
 - entretempo: 18h–19h (filme/série + debate com IA em inglês, descanso real)
 - faculdade:  19h+ (tarefas da faculdade, custom)
@@ -173,12 +173,11 @@ agenda":
 4. Nunca chame confirmar_ajuste_agenda sem o usuário ter confirmado os
    horários antes — o passo 1 é sempre uma proposta, não uma ação.
 
-SOBRE PRÁTICA vs ESTUDO no trabalho:
-- Prática (💻) vale mais pontos (+35) — tempo aplicando na prática
-- Estudo (📝) vale +25 — tempo estudando teoria
-- Curso (📖) é 1h dedicada a um curso (+25)
+SOBRE PRÁTICA no trabalho:
+- Curso (📖) vale +10 — 1h dedicada a um curso
+- Prática (💻) vale +15 — tempo aplicando na prática
 
-Quando o usuário falar sobre horas de prática ou estudo, registre via marcar_tarefa
+Quando o usuário falar sobre horas de prática ou curso, registre via marcar_tarefa
 e pergunte resumidamente como foi."""
 
 # =============================================================================
